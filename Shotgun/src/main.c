@@ -4,17 +4,27 @@
 #include "persist.h"
 #include "music.h"
 #include "banking.h"
-#include "gen/assets/font.h"
 #include "gen/assets/shotgun.h"
+#include "macros.h"
 
 #pragma data-name (push, "SAVE")
-char saved_pos[4] = {30, 40, 1, 1};
 #pragma data-name (pop)
 
+// So that the tilemap starts at an 0x..10 address (easier for debugging)
 unsigned char padding[8] = { 0x55,0x55,0x55,0x55,0x55,0x55,0x55,0x55 };
+/*
+255: obstacle
+0: floor
+8-11: gun
+Players are represented by the top 4 bits, as a tile could have all 4 players plus a gun:
+0x10: player 1
+0x20: player 2
+0x40: player 3
+0x80: player 4
+*/
 unsigned char tilemap[256] = {
   255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,
-  255,  0,  0,255,  0,  0,  0,  0,  0,  0,  0,  0,255,  0,  0,255,
+  255, 16,  0,255,  0,  0,  0,  0,  0,  0,  0,  0,255,  0, 64,255,
   255,  0,  0,255,  0,  8,255,  0,  0,255,  9,  0,255,  0,  0,255,
   255,  0,  0,  0,  0,255,255,  0,  0,255,255,  0,  0,  0,  0,255,
   255,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,255,
@@ -26,130 +36,51 @@ unsigned char tilemap[256] = {
   255,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,255,
   255,  0,  0,  0,  0,255,255,  0,  0,255,255,  0,  0,  0,  0,255,
   255,  0,  0,255,  0, 10,255,  0,  0,255, 11,  0,255,  0,  0,255,
-  255,  0,  0,255,  0,  0,  0,  0,  0,  0,  0,  0,255,  0,  0,255,
+  255,128,  0,255,  0,  0,  0,  0,  0,  0,  0,  0,255,  0, 32,255,
   255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,
     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
 };
 
 unsigned char player_ptr_default[4] = {17, 222, 30, 209};
-unsigned char player_x_default[4] = { 8, 112, 112, 8 }, player_y_default[4] = { 8, 104, 8, 104};
+unsigned char player_x_default[4] = { 8, 112, 112, 8 };
+unsigned char player_y_default[4] = { 8, 104, 8, 104};
 unsigned char player_tile_default[4] = { 8, 96, 64, 40 };
 unsigned char player_score[4] = { 0, 0, 0, 0 };
 unsigned char player_score_tile[4] = { 0, 0, 0, 0 };
 
+// Offset of the players on the timemap
 unsigned char player_ptr[4] = {17, 222, 30, 209};
-unsigned char player_x[4] = { 8, 112, 112, 8 }, player_y[4] = { 8, 104, 8, 104};
-unsigned char player_tile[4] = { 8, 96, 64, 40 };
-unsigned char bullet_x[4] = {0, 0, 0, 0}, bullet_y[4] = {0, 0, 0, 0};
-unsigned char bullet_ptr[4] = {0, 0, 0, 0};
-
-unsigned char bullets[4] = { 0, 0, 0, 0 };
+// Screen position of the players
+unsigned char player_x[4] = { 8, 112, 112, 8 };
+unsigned char player_y[4] = { 8, 104, 8, 104};
+// Direction the players are going (1=negative, 2=positive) when in movement
 unsigned char dir_x[4] = { 0, 0, 0, 0 };
 unsigned char dir_y[4] = { 0, 0, 0, 0 };
+// Direction the players are facing (used when shooting)
 unsigned char dir[4] = { 0, 0, 0, 0 };
+// Tile to use to display the players
+unsigned char player_tile[4] = { 8, 96, 64, 40 };
+unsigned char player_invincible[4] = {0, 0, 0, 0};
 
+// Number of bullets each player has left
+unsigned char bullets[4] = { 0, 0, 0, 0 };
+// Offset of the bullets on the tilemap
+unsigned char bullet_ptr[4] = {0, 0, 0, 0};
+// Scree position of the bullets
+unsigned char bullet_x[4] = {0, 0, 0, 0};
+unsigned char bullet_y[4] = {0, 0, 0, 0};
+// Direction the bullets are going
 unsigned char bullet_dir_x[4] = { 0, 0, 0, 0 };
 unsigned char bullet_dir_y[4] = { 0, 0, 0, 0 };
 
+// Whether there is a gun at the 4 locations
 unsigned char gun[4] = { 0, 0, 0, 0 };  // 0 means there is a gun
-unsigned char *tile;
-unsigned char tmp, tmp2;
-unsigned char player_tilemap;
 
-#define MOVE_PLAYER(nb, flag, mask) \
-        if (dir_x[nb] != 0) {    \
-            if (dir_x[nb] == 1) {    \
-                if (((player_x[nb] & 7) == 0) && (tilemap[player_ptr[nb]-1] == 0xFF)) {   \
-                    dir_x[nb] = 0;   \
-                } else {    \
-                    player_x[nb]--;  \
-                    tmp = player_x[nb] & 7;  \
-                    if (tmp == 4) { \
-                        tilemap[player_ptr[nb]] &= mask;     \
-                        player_ptr[nb]--;    \
-                        tmp2 = tilemap[player_ptr[nb]];  \
-                        tmp = tmp2 & 0xF;       \
-                        if (tmp >= 8 && bullets[nb] == 0) {  \
-                            gun[tmp-8] = 0xFF;  \
-                            tmp = 0;    \
-                            tmp2 &= 0xF0;   \
-                            bullets[nb] = 3; \
-                        }   \
-                        tilemap[player_ptr[nb]] = tmp2 | flag;   \
-                    } else if (tmp == 0) {  \
-                        dir_x[nb] = 0;   \
-                    }   \
-                }   \
-            } else {    \
-               if (((player_x[nb] & 7) == 0) && (tilemap[player_ptr[nb]+1] == 0xFF)) {    \
-                    dir_x[nb] = 0;   \
-                } else {    \
-                    player_x[nb]++;  \
-                    tmp = player_x[nb] & 7;  \
-                    if (tmp == 4) { \
-                        tilemap[player_ptr[nb]] &= mask; \
-                        player_ptr[nb]++;    \
-                        tmp2 = tilemap[player_ptr[nb]];  \
-                        tmp = tmp2 & 0xF;   \
-                        if (tmp >= 8 && bullets[nb] == 0) {  \
-                            gun[tmp-8] = 0xFF;  \
-                            tmp = 0;    \
-                            tmp2 &= 0xF0;   \
-                            bullets[nb] = 3; \
-                        }   \
-                        tilemap[player_ptr[nb]] = tmp2 | flag;   \
-                    } else if (tmp == 0) {  \
-                        dir_x[nb] = 0;   \
-                    }   \
-                }   \
-            }   \
-        } else if (dir_y[nb] != 0) { \
-            if (dir_y[nb] == 1) {    \
-                if (((player_y[nb] & 7) == 0) && (tilemap[player_ptr[nb]-16] == 0xFF)) {  \
-                    dir_y[nb] = 0;   \
-                } else {    \
-                    player_y[nb]--;  \
-                    tmp = player_y[nb] & 7;  \
-                    if (tmp == 4) {     \
-                        tilemap[player_ptr[nb]] &= mask;     \
-                        player_ptr[nb]-=16;  \
-                        tmp2 = tilemap[player_ptr[nb]];  \
-                        tmp = tmp2 & 0xF;   \
-                        if (tmp >= 8 && bullets[nb] == 0) {  \
-                            gun[tmp-8] = 0xFF;  \
-                            tmp = 0;    \
-                            tmp2 &= 0xF0;   \
-                            bullets[nb] = 3; \
-                        }   \
-                        tilemap[player_ptr[nb]] = tmp2 | flag;       \
-                    } else if (tmp == 0) {  \
-                        dir_y[nb] = 0;   \
-                    }   \
-                }   \
-            } else {    \
-               if (((player_y[nb] & 7) == 0) && (tilemap[player_ptr[nb]+16] == 0xFF)) {   \
-                    dir_y[nb] = 0;   \
-                } else {    \
-                    player_y[nb]++;  \
-                    tmp = player_y[nb] & 7;  \
-                    if (tmp == 4) {         \
-                        tilemap[player_ptr[nb]] &= mask;    \
-                        player_ptr[nb]+=16;  \
-                        tmp2 = tilemap[player_ptr[nb]];  \
-                        tmp = tmp2 & 0xF;   \
-                        if (tmp >= 8 && bullets[nb] == 0) {  \
-                            gun[tmp-8] = 0xFF;  \
-                            tmp = 0;    \
-                            tmp2 &= 0xF0;   \
-                            bullets[nb] = 3; \
-                        }   \
-                        tilemap[player_ptr[nb]] = tmp2 | flag;   \
-                    } else if (tmp == nb) {  \
-                        dir_y[nb] = 0;   \
-                    }   \
-                }   \
-            }   \
-        }
+// Temp variables
+unsigned char *tile;
+unsigned char tmp, tile_val;
+unsigned char player_tilemap;
+unsigned char player_idx;
 
 void breakpoint() {}
 void hit();
@@ -166,8 +97,7 @@ int main () {
     await_draw_queue();
     clear_border(0);
 
-    load_spritesheet(&ASSET__font__bios8_bmp, 0);
-    load_spritesheet(&ASSET__shotgun__tiles_bmp, 2);
+    load_spritesheet(&ASSET__shotgun__tiles_bmp, 0);
     load_spritesheet(&ASSET__shotgun__tilemap_bmp, 1);
 
     change_rom_bank(SAVE_BANK_NUM);
@@ -177,38 +107,44 @@ int main () {
         clear_screen(0);
         clear_border(0);
 
+        // Draw the playfield
         draw_sprite(0, 0, 127, 127, 0, 0, 1);
 
-        draw_sprite(player_x[0], player_y[0]-1, 8, 9, player_tile[0], 8, 2);
-        draw_sprite(player_x[1], player_y[1]-1, 8, 9, player_tile[1], 8, 2);
-        draw_sprite(player_x[2], player_y[2]-1, 8, 9, player_tile[2], 8, 2);
-        draw_sprite(player_x[3], player_y[3]-1, 8, 9, player_tile[3], 8, 2);
-        draw_sprite(16, 120, 8, 7, player_score_tile[0], 24, 2);
-        draw_sprite(48, 120, 8, 7, player_score_tile[1], 24, 2);
-        draw_sprite(80, 120, 8, 7, player_score_tile[2], 24, 2);
-        draw_sprite(112, 120, 8, 7, player_score_tile[3], 24, 2);
-        if (!gun[0]) { draw_sprite(40, 16, 8, 8, 56, 0, 2); } else {
+        // Draw the players
+        DRAW_PLAYER(0);
+        DRAW_PLAYER(1);
+        DRAW_PLAYER(2);
+        DRAW_PLAYER(3);
+
+        // Draw the scores
+        draw_sprite(16, 120, 8, 7, player_score_tile[0], 24, 0);
+        draw_sprite(48, 120, 8, 7, player_score_tile[1], 24, 0);
+        draw_sprite(80, 120, 8, 7, player_score_tile[2], 24, 0);
+        draw_sprite(112, 120, 8, 7, player_score_tile[3], 24, 0);
+
+        // Draw the guns
+        if (!gun[0]) { draw_sprite(40, 16, 8, 8, 56, 0, 0); } else {
             gun[0]--;
             if (gun[0] == 0) {
                 tmp = tilemap[37] & 0xF0;
                 tilemap[37] = 8 | tmp;
             }
         }
-        if (!gun[1]) { draw_sprite(80, 16, 8, 8, 56, 0, 2); } else {
+        if (!gun[1]) { draw_sprite(80, 16, 8, 8, 56, 0, 0); } else {
             gun[1]--;
             if (gun[1] == 0) {
                 tmp = tilemap[42] & 0xF0;;
                 tilemap[42] = 9 | tmp;
             }
         }
-        if (!gun[2]) { draw_sprite(40, 96, 8, 8, 56, 0, 2); } else {
+        if (!gun[2]) { draw_sprite(40, 96, 8, 8, 56, 0, 0); } else {
             gun[2]--;
             if (gun[2] == 0) {
                 tmp = tilemap[197] & 0xF0;;
                 tilemap[197] = 10 | tmp;
             }
         }
-        if (!gun[3]) { draw_sprite(80, 96, 8, 8, 56, 0, 2); } else {
+        if (!gun[3]) { draw_sprite(80, 96, 8, 8, 56, 0, 0); } else {
             gun[3]--;
             if (gun[3] == 0) {
                 tmp = tilemap[202] & 0xF0;;
@@ -216,93 +152,32 @@ int main () {
             }
         }
 
+        // Draw the guns held by the players
         if (bullets[0]) {
-            draw_sprite(player_x[0]+4, player_y[0]+1, 8, 8, 56, 0, 2);
+            draw_sprite(player_x[0]+4, player_y[0]+1, 8, 8, 56, 0, 0);
         }
         if (bullets[1]) {
-            draw_sprite(player_x[1]+4, player_y[1]+1, 8, 8, 56, 0, 2);
+            draw_sprite(player_x[1]+4, player_y[1]+1, 8, 8, 56, 0, 0);
         }
 
-        MOVE_PLAYER(0, 0x10, 0xEF)
-        MOVE_PLAYER(1, 0x20, 0xCF)
-        MOVE_PLAYER(2, 0x40, 0xBF)
-        MOVE_PLAYER(3, 0x80, 0x7F)
+        // Compute the players next movement
+        MOVE_PLAYER(0, 0x10, 0xEF);
+        MOVE_PLAYER(1, 0x20, 0xDF);
+        MOVE_PLAYER(2, 0x40, 0xBF);
+        MOVE_PLAYER(3, 0x80, 0x7F);
 
-        //Animating bullets
-        if (bullet_dir_x[0] != 0) {
-            // Going left
-            if (bullet_dir_x[0] == 1) {
-                if (((bullet_x[0] & 7) == 0) && (tilemap[bullet_ptr[0]-1] == 0xFF)) {
-                    bullet_dir_x[0] = 0;
-                    bullet_x[0] = 0;
-                } else {
-                    bullet_x[0]--;
-                    bullet_x[0]--;
-                    tmp = bullet_x[0] & 7;
-                    if (tmp == 6) {
-                        bullet_ptr[0]--;
-                    }
-                }
-            // Going right
-            } else {
-                tmp = tilemap[bullet_ptr[0]];
-                tmp2 = tmp & 0xE0;
-                // We hit someone!
-                if (tmp == 0xFF) {
-//
-//                if (((bullet_x[0] & 7) == 6) && (tilemap[bullet_ptr[0]+1] == 0xFF)) {
-                    bullet_dir_x[0] = 0;
-                    bullet_x[0] = 0;
-                } else if (tmp2) {
-                    hit();
-                } else {
-                    bullet_x[0]++;
-                    bullet_x[0]++;
-                    tmp = bullet_x[0] & 7;
-                    if (tmp == 0) {
-                        bullet_ptr[0]++;
-                    }
-                }
-            }
-            draw_box(bullet_x[0], bullet_y[0], 1, 1, 7);
-        } else if (bullet_dir_y[0] != 0) {
-            // Going up
-            if (bullet_dir_y[0] == 1) {
-                if (((bullet_y[0] & 7) == 0) && (tilemap[bullet_ptr[0]-16] == 0xFF)) {
-                    bullet_dir_y[0] = 0;
-                    bullet_x[0] = 0;
-                } else {
-                    bullet_y[0]--;
-                    bullet_y[0]--;
-                    tmp = bullet_y[0] & 7;
-                    if (tmp == 6) {
-                        bullet_ptr[0]-= 16;
-                    }
-                }
-            // Going down
-            } else {
-               if (((bullet_y[0] & 7) == 6) && (tilemap[bullet_ptr[0]+16] == 0xFF)) {
-                    bullet_dir_y[0] = 0;
-                    bullet_x[0] = 0;
-                } else {
-                    bullet_y[0]++;
-                    bullet_y[0]++;
-                    tmp = bullet_y[0] & 7;
-                    if (tmp == 0) {
-                        bullet_ptr[0]+=16;
-                    }
-                }
-            }
-            draw_box(bullet_x[0], bullet_y[0], 1, 1, 7);
-        }
-
-        cursorX = 4;
-        cursorY = 4;
-        print_hex_num(player_ptr[0]);
+        // Animating bullets
+        MOVE_BULLET(0, 0xEF);
+        MOVE_BULLET(1, 0xDF);
+        MOVE_BULLET(2, 0xBF);
+        MOVE_BULLET(3, 0x7F);
 
         await_draw_queue();
+        PROFILER_END(0);
         sleep(1);
         flip_pages();
+        PROFILER_START(0);
+
         update_inputs();
         if(player1_buttons & INPUT_MASK_LEFT && dir_y[0] == 0) {
             dir_x[0] = 1;
@@ -340,66 +215,53 @@ int main () {
             player_tile[1] = 112;
         }
 
-        if (bullets[0] != 0 && bullet_x[0] == 0 && (player1_buttons & ~player1_old_buttons & INPUT_MASK_A)) {
-            bullets[0]--;
-            breakpoint();
-            switch(dir[0]) {
-                // Shoot right
-                case 0:
-                    bullet_x[0] = player_x[0]+8;
-                    bullet_y[0] = player_y[0]+4;
-                    bullet_ptr[0] = player_ptr[0] + 1;
-                    bullet_dir_x[0] = 2;
-                    bullet_dir_y[0] = 0;
-                    break;
-                // Shoot left
-                case 1:
-                    bullet_x[0] = player_x[0]-2;
-                    bullet_y[0] = player_y[0]+4;
-                    bullet_ptr[0] = player_ptr[0] - 1;
-                    bullet_dir_x[0] = 1;
-                    bullet_dir_y[0] = 0;
-                    break;
-                // Shoot up
-                case 2:
-                    bullet_x[0] = player_x[0]+4;
-                    bullet_y[0] = player_y[0]-2;
-                    bullet_ptr[0] = player_ptr[0] - 16;
-                    bullet_dir_x[0] = 0;
-                    bullet_dir_y[0] = 1;
-                    break;
-                // Shoot down
-                case 3:
-                    bullet_x[0] = player_x[0]+4;
-                    bullet_y[0] = player_y[0]+8;
-                    bullet_ptr[0] = player_ptr[0] + 16;
-                    bullet_dir_x[0] = 0;
-                    bullet_dir_y[0] = 2;
-                    break;
-            }
-            breakpoint();
-            if (tilemap[bullet_ptr[0]] == 0xFF) {
-                bullet_x[0] = 0;
-                bullet_dir_x[0] = 0;
-                bullet_dir_y[0] = 0;
-            }
-        }
+        CHECK_PLAYER_FIRE(0, player1_buttons, player1_old_buttons);
+        CHECK_PLAYER_FIRE(1, player2_buttons, player2_old_buttons);
     }
 
-  return (0);                                     //  We should never get here!
+  return (0);
 }
 
+// Reset a player to its original position
+// player_idx: player who shot
+// tmp: player who got shot
+void reset_player() {
+    player_ptr[tmp] = player_ptr_default[tmp];
+    player_x[tmp] = player_x_default[tmp];
+    player_y[tmp] = player_y_default[tmp];
+    player_tile[tmp] = player_tile_default[tmp];
+    player_invincible[tmp] = 255;
+
+    player_score[player_idx]++;
+    player_score_tile[player_idx] += 8;
+}
+
+// When a bullet hits a player!
+// player_idx: the player who shot
+// tile_val: the value of the tile (player_idx bit removed)
 void hit() {
-    if (tmp2 & 0x10) {
+    if (tile_val & 0x10) {
         tmp = 0;
+        tilemap[bullet_ptr[0]] &= 0xEF;
+        reset_player();
     }
-    tilemap[bullet_ptr[0]] &= 0xDF;
-    player_ptr[1] = player_ptr_default[1];
-    player_x[1] = player_x_default[1];
-    player_y[1] = player_y_default[1];
-    player_tile[1] = player_tile_default[1];
-    bullet_dir_x[0] = 0;
-    bullet_x[0] = 0;
-    player_score[0]++;
-    player_score_tile[0]+=8;
+    if (tile_val & 0x20) {
+        tmp = 1;
+        tilemap[bullet_ptr[0]] &= 0xDF;
+        reset_player();
+    }
+    if (tile_val & 0x40) {
+        tmp = 2;
+        tilemap[bullet_ptr[0]] &= 0xBF;
+        reset_player();
+    }
+    if (tile_val & 0x80) {
+        tmp = 3;
+        tilemap[bullet_ptr[0]] &= 0x7F;
+        reset_player();
+    }
+
+    bullet_dir_x[player_idx] = 0;
+    bullet_dir_y[player_idx] = 0;
+    bullet_x[player_idx] = 0;
 }
