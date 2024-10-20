@@ -10,6 +10,7 @@
 #pragma data-name (push, "SAVE")
 #pragma data-name (pop)
 
+#pragma code-name (push, "DATA")
 // So that the tilemap starts at an 0x..10 address (easier for debugging)
 unsigned char padding[8] = { 0x55,0x55,0x55,0x55,0x55,0x55,0x55,0x55 };
 /*
@@ -41,6 +42,26 @@ unsigned char tilemap[256] = {
     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
 };
 
+unsigned char tilemap_dir[256] = {
+  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+  0, 10,  6,  0, 10, 14, 12, 14, 14, 12, 14,  6,  0, 10,  6,  0,
+  0, 11,  7,  0, 11,  5,  0, 11,  7,  0,  9,  7,  0, 11,  7,  0,
+  0, 11, 15, 14,  7,  0,  0, 11,  7,  0,  0, 11, 14, 15,  7,  0,
+  0, 11, 13, 13, 13, 12, 14, 15, 15, 14, 12, 13, 13, 13,  7,  0,
+  0,  3,  0,  0,  0,  0, 11, 15, 15,  7,  0,  0,  0,  0,  3,  0,
+  0, 11, 14, 14,  6,  0, 11, 15, 15,  7,  0, 10, 14, 14,  7,  0,
+  0, 11, 15, 15, 15, 12, 15, 15, 15, 15, 12, 15, 15, 15,  7,  0,
+  0, 11, 13, 13,  5,  0, 11, 15, 15,  7,  0,  9, 13, 13,  7,  0,
+  0,  3,  0,  0,  0,  0, 11, 15, 15,  7,  0,  0,  0,  0,  3,  0,
+  0, 11, 14, 14, 14, 12, 13, 15, 15, 13, 12, 14, 14, 14,  7,  0,
+  0, 11, 15, 13,  7,  0,  0, 11,  7,  0,  0, 11, 13, 15,  7,  0,
+  0, 11,  7,  0, 11,  6,  0, 11,  7,  0, 10,  7,  0, 11,  7,  0,
+  0,  9,  5,  0,  9, 13, 12, 13, 13, 12, 13,  5,  0,  9,  5,  0,
+  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
+};
+#pragma code-name (pop)
+
 unsigned char player_ptr_default[4] = {17, 222, 30, 209};
 unsigned char player_x_default[4] = { 8, 112, 112, 8 };
 unsigned char player_y_default[4] = { 8, 104, 8, 104};
@@ -56,6 +77,14 @@ unsigned char player_y[4] = { 8, 104, 8, 104};
 // Direction the players are going (1=negative, 2=positive) when in movement
 unsigned char dir_x[4] = { 0, 0, 0, 0 };
 unsigned char dir_y[4] = { 0, 0, 0, 0 };
+// AI: direction compressed (1=up, 2=down, 4=left, 8=right)
+unsigned char dir_bit[4] = { 0, 0, 4, 0 };
+unsigned char dir_bit_not[4] = { 0, 0, 8, 0 };
+// AI: where the CPU players want to go
+unsigned char target_x[2] = { 10, 0 };
+unsigned char target_y[2] = { 12, 0 };
+unsigned char moving[2] = { 0, 0 };
+unsigned char steps[2] = { 0, 0 };
 // Direction the players are facing (used when shooting)
 unsigned char dir[4] = { 0, 0, 0, 0 };
 // Tile to use to display the players
@@ -79,6 +108,7 @@ unsigned char gun[4] = { 0, 0, 0, 0 };  // 0 means there is a gun
 // Temp variables
 unsigned char *tile;
 unsigned char tmp, tile_val;
+int long_val1, long_val2;
 unsigned char player_tilemap;
 unsigned char player_idx;
 
@@ -97,8 +127,8 @@ int main () {
     await_draw_queue();
     clear_border(0);
 
-    load_spritesheet(&ASSET__shotgun__tiles_bmp, 0);
-    load_spritesheet(&ASSET__shotgun__tilemap_bmp, 1);
+    load_spritesheet((char*)&ASSET__shotgun__tiles_bmp, 0);
+    load_spritesheet((char*)&ASSET__shotgun__tilemap_bmp, 1);
 
     change_rom_bank(SAVE_BANK_NUM);
 
@@ -216,12 +246,89 @@ int main () {
         }
 
         CHECK_PLAYER_FIRE(0, player1_buttons, player1_old_buttons);
-        CHECK_PLAYER_FIRE(1, player2_buttons, player2_old_buttons);
+//        CHECK_PLAYER_FIRE(1, player2_buttons, player2_old_buttons);
+
+        // AI for player 3
+        // If it's "not moving" i.e. not at an intersection
+        if (moving[0] == 0) {
+            breakpoint();
+            tile_val = tilemap_dir[player_ptr[2]];   // We get the possible directions
+            tile_val ^= dir_bit_not[0];              // We remove the reverse direction
+            long_val1 = 4000;
+            // Up
+            if (tile_val & 0x1) {
+                tmp = target_x[0] >= player_x[2] ? target_x[0] - player_x[2] : player_x[2] - target_x[0];
+                long_val1 = tmp*tmp;
+                tmp = target_y[0] >= player_y[2]-1 ? target_y[0] - player_y[2] + 1 : player_y[2] - 1 - target_y[0];
+                long_val1 += tmp*tmp;
+                dir_x[2] = 0;
+                dir_y[2] = 1;
+                player_ptr[2] -= 16;
+            }
+            // Down
+            if (tile_val & 0x2) {
+                tmp = target_x[0] >= player_x[2] ? target_x[0] - player_x[2] : player_x[2] - target_x[0];
+                long_val2 = tmp*tmp;
+                tmp = target_y[0] >= player_y[2]+1 ? target_y[0] - player_y[2] - 1 : player_y[2] + 1 - target_y[0];
+                long_val2 += tmp*tmp;
+                if (long_val2 < long_val1) {
+                    long_val1 = long_val2;
+                    dir_x[2] = 0;
+                    dir_y[2] = 2;
+                    player_ptr[2] += 16;
+                }
+            }
+            // Left
+            if (tile_val & 0x4) {
+                tmp = target_x[0] >= player_x[2]-1 ? target_x[0] - player_x[2]+1 : player_x[2]-1 - target_x[0];
+                long_val2 = tmp*tmp;
+                tmp = target_y[0] >= player_y[2] ? target_y[0] - player_y[2] : player_y[2] - target_y[0];
+                long_val2 += tmp*tmp;
+                if (long_val2 < long_val1) {
+                    long_val1 = long_val2;
+                    dir_x[2] = 1;
+                    dir_y[2] = 0;
+                    player_ptr[2]--;
+                }
+            }
+            // Right
+            if (tile_val & 0x8) {
+                tmp = target_x[0] >= player_x[2]+1 ? target_x[0] - player_x[2]-1 : player_x[2]+1 - target_x[0];
+                long_val2 = tmp*tmp;
+                tmp = target_y[0] >= player_y[2] ? target_y[0] - player_y[2] : player_y[2] - target_y[0];
+                long_val2 += tmp*tmp;
+                if (long_val2 < long_val1) {
+                    long_val1 = long_val2;
+                    dir_x[2] = 2;
+                    dir_y[2] = 0;
+                    player_ptr[2]++;
+                }
+            }
+            moving[0] = 1;
+            steps[0] = 0;
+        // Player in movement, so keep going
+        } else {
+            if (dir_x[2] == 1) {
+                player_x[2]++;
+            } else if (dir_x[2] == 2) {
+                player_x[2]--;
+            }
+            if (dir_y[2] == 1) {
+                player_y[2]++;
+            } else if (dir_y[2] == 2) {
+                player_y[2]--;
+            }
+            steps[0]++;
+            if (steps[0] == 8) {
+                moving[0] = 0;
+            }
+        }
     }
 
   return (0);
 }
 
+#pragma data-name (push, "PROG0")
 // Reset a player to its original position
 // player_idx: player who shot
 // tmp: player who got shot
@@ -265,3 +372,4 @@ void hit() {
     bullet_dir_y[player_idx] = 0;
     bullet_x[player_idx] = 0;
 }
+#pragma data-name (pop)
